@@ -1,0 +1,168 @@
+/* Part 2: Four-Digit Counter with MAX7219 and FRDM-KL25Z */
+
+#include <MKL25Z4.H>
+
+#define DECODE    9
+#define INTENSITY 10
+#define SCANLIMIT 11
+#define SHUTDOWN  12
+#define TEST      15
+
+// Counter Control Flags
+uint8_t is_running = 0;      // 0 = Paused, 1 = Running
+uint8_t count_up = 1;        // 1 = Increment, 0 = Decrement
+int16_t counter_value = 0;   // Current count (0 to 9999)
+
+// Function Prototypes
+void SPI0_init(void);
+void GPIO_init(void);
+
+void max7219_write(unsigned char command, unsigned char data);
+
+// Helper function to display number across all four displays
+void display_number(int16_t number);
+
+// Delay function in milliseconds
+void delay_ms(uint32_t ms);
+
+uint8_t debounce_button(PORT_Type* port, uint32_t pin);
+
+int main(void) {
+    uint32_t timer_tick = 0;
+
+    SPI0_init(); // Initialize SPI module and related GPIO pins
+    GPIO_init(); // Initialize GPIO for peripherals
+
+    // Configure MAX7219
+    max7219_write(DECODE, 0x0F);    // Enable decode for digits 0-3 (1111 in binary)
+
+    max7219_write(SCANLIMIT, 3);    // Drive 4 digits
+    max7219_write(INTENSITY, 4);    // Brightness level
+    max7219_write(TEST, 0);         // Disable test mode
+    max7219_write(SHUTDOWN, 1);     // Power on display
+
+    // Begin to display the counter value
+    display_number(counter_value);
+
+    // Infinite loop
+    while (1) {
+        /* Button 1: Play / Pause */
+        if (!(PTA->PDIR & (1 << 1))) {
+            delay_ms(50); /* Debounce */
+            if (!(PTA->PDIR & (1 << 1))) {
+                is_running = !is_running;
+                while (!(PTA->PDIR & (1 << 1))); /* Wait release */
+            }
+        }
+
+        /* Button 2: Toggle Increment / Decrement Mode */
+        if (!(PTA->PDIR & (1 << 2))) {
+            delay_ms(50);
+            if (!(PTA->PDIR & (1 << 2))) {
+                count_up = !count_up;
+                while (!(PTA->PDIR & (1 << 2)));
+            }
+        }
+
+        /* Button 3: Manual Adjustment (Only active when Paused) */
+        if (!is_running && !(PTA->PDIR & (1 << 4))) {
+            delay_ms(50);
+            if (!(PTA->PDIR & (1 << 4))) {
+                if (count_up) {
+                    counter_value = (counter_value >= 9999) ? 0 : counter_value + 1;
+                } else {
+                    counter_value = (counter_value <= 0) ? 9999 : counter_value - 1;
+                }
+                display_number(counter_value);
+                while (!(PTA->PDIR & (1 << 4)));
+            }
+        }
+
+        /* Button 4: Reset */
+        if (!(PTA->PDIR & (1 << 5))) {
+            delay_ms(50);
+            if (!(PTA->PDIR & (1 << 5))) {
+                counter_value = count_up ? 0 : 9999;
+                display_number(counter_value);
+                while (!(PTA->PDIR & (1 << 5)));
+            }
+        }
+
+        /* Continuous Counter Step Logic (When Running) */
+        if (is_running) {
+            timer_tick++;
+            if (timer_tick >= 200) { /* Adjust loop tick delay for counter speed */
+                if (count_up) {
+                    counter_value = (counter_value >= 9999) ? 0 : counter_value + 1;
+                } else {
+                    counter_value = (counter_value <= 0) ? 9999 : counter_value - 1;
+                }
+                display_number(counter_value);
+                timer_tick = 0;
+            }
+        }
+
+        delay_ms(2); /* Base loop polling delay */
+    }
+}
+
+void GPIO_init(void) {
+    SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK; /* Enable clock to Port A */
+
+    /* Configure PTA1, PTA2, PTA4, PTA5 as GPIO Inputs with Pull-ups */
+    PORTA->PCR[1] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
+    PORTA->PCR[2] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
+    PORTA->PCR[4] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
+    PORTA->PCR[5] = PORT_PCR_MUX(1) | PORT_PCR_PE_MASK | PORT_PCR_PS_MASK;
+
+    PTA->PDDR &= ~(0x0F); /* Pins 0-3 set as Inputs */
+}
+
+void SPI0_init(void) {
+    SIM->SCGC5 |= SIM_SCGC5_PORTD_MASK;
+
+    PORTD->PCR[1] = PORT_PCR_MUX(2); /* PTD1 = SPI0_SCK */
+    PORTD->PCR[2] = PORT_PCR_MUX(2); /* PTD2 = SPI0_MOSI */
+    PORTD->PCR[0] = PORT_PCR_MUX(1); /* PTD0 = GPIO CS */
+    PTD->PDDR |= 0x01;
+    PTD->PSOR = 0x01;
+
+    SIM->SCGC4 |= SIM_SCGC4_SPI0_MASK;
+
+    SPI0->C1 = 0x10;
+    SPI0->BR = 0x60;
+    SPI0->C1 |= 0x40;
+}
+
+void max7219_write(unsigned char command, unsigned char data) {
+    volatile char dummy;
+    PTD->PCOR = 1;
+
+    while (!(SPI0->S & 0x20));
+    SPI0->D = command;
+    while (!(SPI0->S & 0x80));
+    dummy = SPI0->D;
+
+    while (!(SPI0->S & 0x20));
+    SPI0->D = data;
+    while (!(SPI0->S & 0x80));
+    dummy = SPI0->D;
+
+    PTD->PSOR = 1;
+}
+
+void display_number(int16_t number) {
+    if (number > 9999) number = 9999;
+    if (number < 0) number = 0;
+
+    max7219_write(1, number % 10);          /* Digit 1 */
+    max7219_write(2, (number / 10) % 10);   /* Digit 2 */
+    max7219_write(3, (number / 100) % 10);  /* Digit 3 */
+    max7219_write(4, (number / 1000) % 10); /* Digit 4 */
+}
+
+void delay_ms(uint32_t ms) {
+    uint32_t i, j;
+    for (i = 0; i < ms; i++)
+        for (j = 0; j < 3000; j++) __NOP();
+}
