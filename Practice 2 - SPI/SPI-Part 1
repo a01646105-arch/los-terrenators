@@ -1,0 +1,88 @@
+/* Programming MAX7219 via SPI with FRDM-KL25Z for 4-Digit Display */
+
+#include <MKL25Z4.H>
+
+void SPI0_init(void);
+void max7219_write(unsigned char command, unsigned char data);
+
+// Function to display a number across all four displays
+void display_number(uint16_t number);
+
+#define DECODE    9
+#define INTENSITY 10
+#define SCANLIMIT 11
+#define SHUTDOWN  12
+#define TEST      15
+
+int main(void) {
+    SPI0_init(); // Initialize SPI module and GPIO pins
+
+    // MAX7219 Configuration
+    max7219_write(DECODE, 0x0F);    // Enable decode for digits 0 to 3 (1111 in binary)
+
+    max7219_write(SCANLIMIT, 3);    // Scan 4 digits (0, 1, 2, 3)
+    max7219_write(INTENSITY, 4);    // Set brightness level (0 to 15)
+    max7219_write(TEST, 0);         // Turn off display test mode
+    max7219_write(SHUTDOWN, 1);     // Power on display from sleep
+
+    // Display a single number on the 4 digits (0 to 9999)
+    display_number(7777);
+
+    // Set individual digits manually
+    // Position 1 = Rightmost digit, Position 4 = Leftmost digit
+//  max7219_write(1, 5); // Display '5' on Digit 1 (Rightmost)
+//  max7219_write(2, 6); // Display '6' on Digit 2
+//  max7219_write(3, 7); // Display '7' on Digit 3
+//  max7219_write(4, 8); // Display '8' on Digit 4 (Leftmost)
+
+    // Force all segments ON across all digits //
+//  max7219_write(TEST, 1); // Uncomment and comment other lines to run test mode
+
+    while(1) {
+        // Keep display alive
+    }
+}
+
+void SPI0_init(void) {
+    SIM->SCGC5 |= 0x1000;    // Enable clock for Port D
+
+    PORTD->PCR[1] = 0x200;   // Set PTD1 as SPI0_SCK
+    PORTD->PCR[2] = 0x200;   // Set PTD2 as SPI0_MOSI
+    PORTD->PCR[0] = 0x100;   // Set PTD0 as GPIO
+    PTD->PDDR |= 0x01;       // Set PTD0 direction as Output for CS
+    PTD->PSOR = 0x01;        // CS idle High
+
+    SIM->SCGC4 |= 0x400000;  // Enable clock for SPI0
+
+    SPI0->C1 = 0x10;         // Disable SPI module and set KL25Z as Master
+    SPI0->BR = 0x60;         // Set Baud rate divider (Baud Rate = 1 MHz)
+    SPI0->C1 |= 0x40;        // Enable SPI module
+}
+
+void max7219_write(unsigned char command, unsigned char data) {
+
+	volatile char dummy;
+    PTD->PCOR = 1;               // Drop CS low to select MAX7219
+
+    while(!(SPI0->S & 0x20)) { } // Wait until SPTEF bit (Transmit Buffer Empty) or tx is 1
+    SPI0->D = command;           // Send command byte first
+    while(!(SPI0->S & 0x80)) { } // Wait until SPRF bit (Receive Complete) or rx is 1
+    dummy = SPI0->D;             // Read SPI0->D to clear flag
+
+    while(!(SPI0->S & 0x20)) { } // Wait until SPTEF is 1
+    SPI0->D = data;              // Send data byte
+    while(!(SPI0->S & 0x80)) { } // Wait until SPRF is 1
+    dummy = SPI0->D;             // Read SPI0->D to clear flag
+
+    PTD->PSOR = 1;               // Drive CS high to latch command into MAX7219
+}
+
+// Helper function to split an integer into 4 separate digits
+void display_number(uint16_t number) {
+    if (number > 9999) number = 9999;       // Number limit for 4 digits
+
+    max7219_write(1, number % 10);          // Ones place -> DIG 0 (Rightmost)
+    max7219_write(2, (number / 10) % 10);   // Tens place -> DIG 1
+    max7219_write(3, (number / 100) % 10);  // Hundreds place -> DIG 2
+    max7219_write(4, (number / 1000) % 10); // Thousands place -> DIG 3 (Leftmost)
+}
